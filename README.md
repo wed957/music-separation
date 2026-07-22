@@ -14,7 +14,7 @@ UAR Music 是一个面向普通用户的 Windows 歌曲处理工具。它把一�
 - 支持 `.ncm`、`.wav`、`.mp3`、`.flac`
 - 自动扫描所选文件夹及其子文件夹
 - 每首歌生成 `_唱歌声.wav` 和 `_音乐声.wav`
-- 内置离线处理文件，正式发布包无需额外下载
+- 内置两套离线处理文件，它们会一个接一个完成工作，再把两次结果合到一起；正式发布包无需额外下载
 - 支持 Windows 高分辨率屏幕和 4K / 200% 显示缩放
 - 可在处理过程中停止任务
 
@@ -41,15 +41,22 @@ UARMusic-win-x64/
 ├── UARMusic.exe
 ├── onnxruntime.dll
 ├── onnxruntime_providers_shared.dll
+├── THIRD_PARTY_NOTICES.md
+├── licenses/
+│   └── onnxruntime/
+│       ├── LICENSE
+│       └── ThirdPartyNotices.txt
 └── models/
+    ├── bs_roformer_quantized.onnx
     └── mel_band_roformer_vocals.onnx
 ```
 
-完整运行目录约 `149 MB`（约 `142 MiB`）。模型文件的预期 SHA-256 为：
+完整运行目录约 `315 MB`（约 `300 MiB`）。两份内置文件的信息如下：
 
-```text
-BD42C4B3339F43B41BACEB2A0204C941744F43911A47F006DF5B62E560F91CC1
-```
+| 文件 | 大小 | SHA-256 |
+| --- | ---: | --- |
+| `bs_roformer_quantized.onnx` | `165,858,657` 字节（约 `165.9 MB`） | `B86B6224FF34D6D34C2530E0D41495B6A2C12DB46ACC1A7A5C7F64D2352807E9` |
+| `mel_band_roformer_vocals.onnx` | `135,441,533` 字节（约 `135.4 MB`） | `BD42C4B3339F43B41BACEB2A0204C941744F43911A47F006DF5B62E560F91CC1` |
 
 ## 源码目录
 
@@ -65,7 +72,7 @@ UARMusic/
 └── README.md
 ```
 
-构建目录、下载缓存、完整 ONNX Runtime 调试包和发布包均由 `.gitignore` 排除。仓库只保留约 12 MB 的最小 ONNX Runtime 构建文件；当前使用的模型通过 Git LFS 跟踪，旧模型和实验文件不会提交。
+构建目录、下载缓存、完整 ONNX Runtime 调试包和发布包均由 `.gitignore` 排除。仓库只保留约 12 MB 的最小 ONNX Runtime 构建文件；当前使用的两份模型通过 Git LFS 跟踪，旧模型和实验文件不会提交。
 
 ## 开发者构建
 
@@ -86,7 +93,7 @@ git lfs pull
 
 ### 编译
 
-默认使用仓库内的 ONNX Runtime 和 `models/mel_band_roformer_vocals.onnx`，无需填写本机依赖路径：
+默认使用仓库内的 ONNX Runtime、`models/bs_roformer_quantized.onnx` 和 `models/mel_band_roformer_vocals.onnx`，无需填写本机依赖路径。程序会串行执行两个模型，并在波形层融合两次处理结果，避免两个模型同时常驻内存：
 
 ```powershell
 cmake -S . -B build -G Ninja `
@@ -107,7 +114,13 @@ build/bin/
 cmake --install build --prefix dist/UARMusic-win-x64
 ```
 
-需要替换依赖时，可以额外传入 `-DUAR_ORT_ROOT=<SDK目录>` 或 `-DUAR_MODEL_FILE=<模型文件>`。如果缺少头文件、DLL、导入库或模型，CMake 会在配置阶段给出明确错误。
+需要替换依赖时，可以额外传入以下参数：
+
+- `-DUAR_ORT_ROOT=<SDK目录>`
+- `-DUAR_BS_MODEL_FILE=<BS模型文件>`
+- `-DUAR_MEL_MODEL_FILE=<Mel模型文件>`
+
+如果缺少头文件、DLL、导入库或任一模型，CMake 会在配置阶段给出明确错误。
 
 ## 验证情况
 

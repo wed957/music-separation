@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(UARMusic VERSION 1.0.0 LANGUAGES CXX)
+project(UARMusic VERSION 1.0.1 LANGUAGES CXX)
 
 # 依赖目录不写死在源码中，便于在干净的工作区或 CI 中构建。
 set(UAR_ORT_ROOT "" CACHE PATH
@@ -10,11 +10,18 @@ if(NOT UAR_ORT_ROOT)
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
 endif()
 
-set(UAR_MODEL_FILE "" CACHE FILEPATH
-    "内置音频处理模型 mel_band_roformer_vocals.onnx 的路径")
-if(NOT UAR_MODEL_FILE)
-    set(UAR_MODEL_FILE
+set(UAR_MEL_MODEL_FILE "" CACHE FILEPATH
+    "内置 Mel 音频处理文件的路径")
+if(NOT UAR_MEL_MODEL_FILE)
+    set(UAR_MEL_MODEL_FILE
         "${CMAKE_CURRENT_SOURCE_DIR}/models/mel_band_roformer_vocals.onnx")
+endif()
+
+set(UAR_BS_MODEL_FILE "" CACHE FILEPATH
+    "内置 BS 音频处理文件的路径")
+if(NOT UAR_BS_MODEL_FILE)
+    set(UAR_BS_MODEL_FILE
+        "${CMAKE_CURRENT_SOURCE_DIR}/models/bs_roformer_quantized.onnx")
 endif()
 
 set(UAR_ORT_INCLUDE_DIR "${UAR_ORT_ROOT}/include")
@@ -41,9 +48,26 @@ if(NOT EXISTS "${UAR_ORT_RUNTIME_DIR}/onnxruntime_providers_shared.dll")
     message(FATAL_ERROR
         "找不到 onnxruntime_providers_shared.dll，请确认 SDK 目录完整")
 endif()
-if(NOT EXISTS "${UAR_MODEL_FILE}")
+if(NOT EXISTS "${UAR_MEL_MODEL_FILE}")
     message(FATAL_ERROR
-        "找不到音频处理模型，请设置 -DUAR_MODEL_FILE=<模型文件>")
+        "找不到 Mel 音频处理文件，请设置 -DUAR_MEL_MODEL_FILE=<文件路径>")
+endif()
+if(NOT EXISTS "${UAR_BS_MODEL_FILE}")
+    message(FATAL_ERROR
+        "找不到 BS 音频处理文件，请设置 -DUAR_BS_MODEL_FILE=<文件路径>")
+endif()
+
+file(SIZE "${UAR_MEL_MODEL_FILE}" UAR_MEL_MODEL_SIZE)
+file(SHA256 "${UAR_MEL_MODEL_FILE}" UAR_MEL_MODEL_SHA256)
+if(NOT UAR_MEL_MODEL_SIZE EQUAL 135441533 OR
+   NOT UAR_MEL_MODEL_SHA256 STREQUAL "bd42c4b3339f43b41baceb2a0204c941744f43911a47f006df5b62e560f91cc1")
+    message(FATAL_ERROR "Mel 音频处理文件不完整，请执行 git lfs pull")
+endif()
+file(SIZE "${UAR_BS_MODEL_FILE}" UAR_BS_MODEL_SIZE)
+file(SHA256 "${UAR_BS_MODEL_FILE}" UAR_BS_MODEL_SHA256)
+if(NOT UAR_BS_MODEL_SIZE EQUAL 165858657 OR
+   NOT UAR_BS_MODEL_SHA256 STREQUAL "b86b6224ff34d6d34c2530e0d41495b6a2c12db46acc1a7a5c7f64d2352807e9")
+    message(FATAL_ERROR "BS 音频处理文件不完整，请执行 git lfs pull")
 endif()
 
 add_executable(UARMusic WIN32
@@ -96,8 +120,11 @@ add_custom_command(TARGET UARMusic POST_BUILD
         "$<TARGET_FILE_DIR:UARMusic>/onnxruntime_providers_shared.dll"
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:UARMusic>/models"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${UAR_MODEL_FILE}"
+        "${UAR_MEL_MODEL_FILE}"
         "$<TARGET_FILE_DIR:UARMusic>/models/mel_band_roformer_vocals.onnx"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${UAR_BS_MODEL_FILE}"
+        "$<TARGET_FILE_DIR:UARMusic>/models/bs_roformer_quantized.onnx"
 )
 
 set_target_properties(UARMusic PROPERTIES
@@ -111,7 +138,19 @@ install(FILES
     "${UAR_ORT_RUNTIME_DIR}/onnxruntime_providers_shared.dll"
     DESTINATION .
 )
-install(FILES "${UAR_MODEL_FILE}"
+install(FILES "${UAR_MEL_MODEL_FILE}"
     DESTINATION models
     RENAME mel_band_roformer_vocals.onnx
+)
+install(FILES "${UAR_BS_MODEL_FILE}"
+    DESTINATION models
+    RENAME bs_roformer_quantized.onnx
+)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
+    DESTINATION .
+)
+install(FILES
+    "${UAR_ORT_ROOT}/LICENSE"
+    "${UAR_ORT_ROOT}/ThirdPartyNotices.txt"
+    DESTINATION licenses/onnxruntime
 )

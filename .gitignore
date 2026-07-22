@@ -11,6 +11,7 @@ CMakeSettings.json
 /third_party_probe/
 /models/*.onnx
 !/models/mel_band_roformer_vocals.onnx
+!/models/bs_roformer_quantized.onnx
 
 # 发布包、测试输出和截图
 /dist/

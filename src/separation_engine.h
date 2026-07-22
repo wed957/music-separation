@@ -10,6 +10,7 @@
 namespace uar {
 
 struct SeparationConfig {
+    std::filesystem::path bsModel;
     std::filesystem::path melModel;
     std::wstring outputSuffix;
     int segmentSize = 256; // 保留与参考界面一致的参数；Roformer 导出使用固定 8 秒块。

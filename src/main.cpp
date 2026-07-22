@@ -769,6 +769,7 @@ void RunJob(std::wstring inputText, std::wstring outputText, std::wstring modelT
             ? std::filesystem::path(ExecutableDirectory()) / L"models"
             : std::filesystem::path(modelText);
         uar::SeparationConfig config;
+        config.bsModel = modelDir / L"bs_roformer_quantized.onnx";
         config.melModel = modelDir / L"mel_band_roformer_vocals.onnx";
         config.outputSuffix = std::move(suffixText);
         config.segmentSize = segment;
