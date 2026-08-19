@@ -669,8 +669,8 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
         const auto stemText = std::string(stem.begin(), stem.end());
         callbacks.log("正在保存两份歌曲：" + stemText);
     }
-    if (!WriteWav(outputDirectory / (stem + version + L"_唱歌声.wav"), vocals, error)) return false;
-    if (!WriteWav(outputDirectory / (stem + version + L"_音乐声.wav"), instrumental, error)) return false;
+    if (!WriteWav(outputDirectory / (stem + version + L"_vocals.wav"), vocals, error)) return false;
+    if (!WriteWav(outputDirectory / (stem + version + L"_instrumental.wav"), instrumental, error)) return false;
     if (callbacks.progress) callbacks.progress(1.0);
     return true;
 }
