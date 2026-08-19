@@ -1,5 +1,10 @@
 #include "separation_engine.h"
 
+#if defined(__MINGW32__) && __GNUC__ >= 16
+#undef _stdcall
+#define _stdcall __stdcall
+#endif
+
 #include <onnxruntime_cxx_api.h>
 
 #include <algorithm>

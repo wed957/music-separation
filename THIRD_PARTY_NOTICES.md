@@ -1,6 +1,6 @@
 # 第三方文件说明
 
-本项目源码直接提交了 `third_party/miniaudio.h` 和裁剪后的 ONNX Runtime Windows x64 SDK，私有仓库还通过 Git LFS 保存音频分离模型。大型调试符号、下载缓存和构建目录不写入 Git 历史。
+本项目源码直接提交了 `third_party/miniaudio.h`、Lucide 图标几何和裁剪后的 ONNX Runtime Windows x64 SDK，私有仓库还通过 Git LFS 保存音频分离模型。大型调试符号、下载缓存和构建目录不写入 Git 历史。
 
 ## miniaudio
 
@@ -14,6 +14,13 @@
 - 项目地址：<https://github.com/microsoft/onnxruntime>
 - 许可：MIT
 - 官方 `LICENSE` 和 `ThirdPartyNotices.txt` 保存在 `third_party/onnxruntime/`
+
+## Lucide
+
+- 项目地址：<https://github.com/lucide-icons/lucide>
+- 许可：ISC
+- 界面图标基于 Lucide 的矢量几何，由应用在运行时统一绘制
+- 完整许可保存在 `third_party/lucide/LICENSE`
 
 ## 音频分离模型
 

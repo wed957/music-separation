@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity version="1.0.1.0" processorArchitecture="*" name="UARMusic" type="win32"/>
-  <description>歌曲小助手</description>
+  <description>UAR Music</description>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <supportedOS Id="{4f476546-937d-4f0e-86fb-11c2431ec2bd}"/>

@@ -5,27 +5,36 @@ UAR Music 是一个面向普通用户的 Windows 歌曲处理工具。它把一�
 - **唱歌声**：主要保留人声
 - **音乐声**：主要保留乐器和背景音乐
 
-程序只在本机处理文件，不上传歌曲，也不会修改原文件。界面只保留“选择歌曲、选择保存位置、开始制作”三个步骤。
+程序只在本机处理文件，不上传歌曲，也不会修改原文件。界面只保留“选择歌曲目录、选择输出目录、开始分轨”三个步骤，并支持黑白主题即时切换。
 
-![歌曲小助手界面](docs/images/app.png)
+![UAR Music 界面](docs/images/app-light.png)
+
+<details>
+<summary>查看暗色界面</summary>
+
+![UAR Music 暗色界面](docs/images/app.png)
+
+</details>
 
 ## 功能
 
-- 支持 `.ncm`、`.wav`、`.mp3`、`.flac`
+- 原生支持 `.ncm`、`.wav`、`.mp3`、`.flac`
+- 通过 Windows Media Foundation 支持 AAC、M4A、MP4、WMA、AIFF、OGG/Opus 等系统可解码格式，不捆绑大型解码库
 - 自动扫描所选文件夹及其子文件夹
 - 每首歌生成 `_唱歌声.wav` 和 `_音乐声.wav`
 - 内置两套离线处理文件，它们会一个接一个完成工作，再把两次结果合到一起；正式发布包无需额外下载
 - 支持 Windows 高分辨率屏幕和 4K / 200% 显示缩放
+- 支持暗色与亮色界面即时切换
 - 可在处理过程中停止任务
 
 ## 下载和使用
 
-完整 Windows 发布包放在 [GitHub Releases](https://github.com/wed957/UARMusic/releases)。下载 `UARMusic-win-x64.zip` 并完整解压，不要只单独复制 `UARMusic.exe`。
+完整 Windows 发布包放在 [GitHub Releases](https://github.com/wed957/music-separation/releases)。下载 `UARMusic-win-x64.zip` 并完整解压，不要只单独复制 `UARMusic.exe`。
 
 1. 双击 `UARMusic.exe`。
-2. 点击“选择歌曲文件夹”。
-3. 点击“选择保存位置”。
-4. 点击“开始制作”。
+2. 点击“选择歌曲目录”。
+3. 点击“选择输出目录”。
+4. 点击“开始分轨”。
 
 输出文件示例：
 
@@ -43,15 +52,19 @@ UARMusic-win-x64/
 ├── onnxruntime_providers_shared.dll
 ├── THIRD_PARTY_NOTICES.md
 ├── licenses/
-│   └── onnxruntime/
-│       ├── LICENSE
-│       └── ThirdPartyNotices.txt
+│   ├── onnxruntime/
+│   │   ├── LICENSE
+│   │   └── ThirdPartyNotices.txt
+│   └── lucide/
+│       └── LICENSE
 └── models/
     ├── bs_roformer_quantized.onnx
     └── mel_band_roformer_vocals.onnx
 ```
 
 完整运行目录约 `315 MB`（约 `300 MiB`）。两份内置文件的信息如下：
+
+界面与格式兼容层不捆绑浏览器、FFmpeg 或额外编解码 DLL；MinGW Release 可执行文件约 `2 MB`，新增格式由 Windows 系统组件解码。完整包体积仍主要来自约 `300 MiB` 的两套离线分轨模型，这是保持离线双模型质量的必要成本。
 
 | 文件 | 大小 | SHA-256 |
 | --- | ---: | --- |
@@ -126,12 +139,15 @@ cmake --install build --prefix dist/UARMusic-win-x64
 
 - Release 构建通过，编译器警告已启用：`-Wall -Wextra -Wpedantic`
 - 已在 `1000x720` 和 `2520x1640` 窗口尺寸下检查界面
+- 已检查暗色、亮色以及 `1000x720` 最小窗口下的完整布局
+- 已用 M4A 样本验证 Windows Media Foundation 解码、重采样和双声道转换
 - 已用 `testdata/in/sample.wav` 完成真实处理
 - 输出为 `44.1 kHz`、双声道、32 位浮点 WAV，时长与输入一致
 
 ## 隐私和使用边界
 
 - 程序不联网，不上传歌曲
+- AAC、M4A、MP4、WMA、AIFF、OGG/Opus 等扩展格式取决于当前 Windows 提供的系统解码器；受 DRM 保护的文件不在支持范围内
 - 原歌曲不会被覆盖
 - NCM 解包只用于用户本人有权访问的本地文件
 - 项目不提供受保护内容的分发能力

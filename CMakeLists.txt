@@ -72,6 +72,7 @@ endif()
 
 add_executable(UARMusic WIN32
     src/main.cpp
+    src/lucide_icons.h
     src/audio_engine.cpp
     src/separation_engine.cpp
     resources/app.rc
@@ -108,6 +109,10 @@ target_link_libraries(UARMusic PRIVATE
     uxtheme
     msimg32
     bcrypt
+    mfplat
+    mfreadwrite
+    mfuuid
+    uuid
     "${UAR_ORT_LIBRARY}"
 )
 
@@ -153,4 +158,7 @@ install(FILES
     "${UAR_ORT_ROOT}/LICENSE"
     "${UAR_ORT_ROOT}/ThirdPartyNotices.txt"
     DESTINATION licenses/onnxruntime
+)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lucide/LICENSE"
+    DESTINATION licenses/lucide
 )
