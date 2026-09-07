@@ -1,303 +1,128 @@
-# Music Separation (UARMusic)
+<h1 align="center">UARMusic</h1>
+<p align="center">本地人声与伴奏分离 · Windows 原生桌面应用</p>
+<p align="center">
+  <img alt="Windows x64" src="https://img.shields.io/badge/Windows-x64-0078D4?style=flat-square">
+  <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square">
+  <img alt="ONNX Runtime 1.20.1" src="https://img.shields.io/badge/ONNX%20Runtime-1.20.1-16803C?style=flat-square">
+  <img alt="CPU inference" src="https://img.shields.io/badge/Inference-CPU-6E7781?style=flat-square">
+</p>
+<p align="center">
+  <a href="https://github.com/wed957/music-separation/releases">下载</a> · <a href="#分离架构">架构</a> · <a href="#从源码构建">构建</a> · <a href="docs/models.md">模型溯源</a> · <a href="#维护与-agent-接手">维护接手</a>
+</p>
 
-Music Separation 是一款面向 Windows 的离线人声与伴奏分离工具。选择歌曲目录和输出目录后，程序会递归扫描歌曲，并为每首歌曲生成一份人声轨和一份伴奏轨。
+---
 
-- 全程本地处理，不上传歌曲
-- 默认亮色界面，可在右上角切换暗色界面
-- 使用两套 Roformer ONNX 模型串行推理并融合结果
-- 原生 Win32 界面，程序本体约 `2 MB`
-- 输入文件不会被修改
+将歌曲分离为人声和伴奏两条 WAV，输入解码、模型推理和试听均在本机完成。界面使用原生 Win32，音频由 miniaudio 与 Windows Media Foundation 处理，分离核心使用两套 ONNX 模型。
 
-> 当前版本只提供 Windows x64 构建。音频分离需要较多计算时间和内存，实际速度取决于处理器、歌曲长度及可用内存。
+<p align="center">
+  <img src="docs/images/app-light.png" alt="UARMusic 浅色界面，包含任务列表、音轨试听与分离操作" width="900">
+</p>
+<p align="center"><a href="docs/images/app.png">查看深色界面</a></p>
 
-![Music Separation 亮色界面](docs/images/app-light.png)
+## 使用
 
-<details>
-<summary>查看暗色界面</summary>
+从 [Releases](https://github.com/wed957/music-separation/releases) 下载 Windows x64 完整包，解压后运行 `UARMusic.exe`，选择歌曲目录与输出目录。处理完成后可试听人声与伴奏。
 
-![Music Separation 暗色界面](docs/images/app.png)
+| 项目 | 当前行为 |
+| --- | --- |
+| 直接解码 | MP3、FLAC、WAV |
+| NCM | 本地解码后分离，中间文件位于 `.ncm_decoded` |
+| 其他格式 | 取决于 Windows Media Foundation 解码器 |
+| 最大时长 | 单首 15 分钟 |
+| 输出规格 | 44.1 kHz、双声道、32 位浮点 WAV |
+| 输出命名 | `<歌名>_vocals.wav`、`<歌名>_instrumental.wav` |
+| 计算后端 | CPU，无 CUDA 执行提供程序 |
 
-</details>
+> 不同目录下的同名歌曲会映射到同名输出，原目录层级不会保留。批量处理前请检查重名，并使用独立输出目录。源歌曲不被改写。
 
-## 下载与使用
+## 分离架构
 
-从 [GitHub Releases](https://github.com/wed957/music-separation/releases) 下载 `UARMusic-win-x64.zip`，完整解压后运行 `UARMusic.exe`。不要只复制可执行文件，程序还需要同目录中的 ONNX Runtime 动态库和 `models` 目录。
-
-1. 点击“选择歌曲目录”，选择包含歌曲的文件夹。
-2. 点击“选择输出目录”，选择用于保存分轨结果的文件夹。
-3. 点击“开始分轨”。程序会扫描输入目录及其所有子目录。
-4. 在处理记录中查看进度。处理期间可点击同一按钮停止任务。
-
-建议让输入目录和输出目录彼此独立。若输出目录位于输入目录内，后续再次扫描时可能把之前生成的 WAV 文件当作新输入。
-
-## 支持的音频格式
-
-程序按扩展名扫描以下文件：
-
-| 类型 | 扩展名 | 解码方式 |
-| --- | --- | --- |
-| NCM | `.ncm` | 本地解包后按 MP3 或 FLAC 解码 |
-| 常用音频 | `.wav`、`.wave`、`.mp3`、`.flac` | 内置解码器，失败时尝试系统解码器 |
-| MPEG-4 / AAC | `.aac`、`.m4a`、`.m4b`、`.mp4` | Windows Media Foundation |
-| Windows Media | `.wma` | Windows Media Foundation |
-| AIFF | `.aif`、`.aiff` | Windows Media Foundation |
-| Ogg / Opus | `.ogg`、`.oga`、`.opus` | Windows Media Foundation |
-| 其他已扫描格式 | `.alac`、`.ape`、`.ac3`、`.amr`、`.mka` | Windows Media Foundation |
-
-“已扫描”不代表任意 Windows 环境都一定能够解码。除 WAV、MP3、FLAC 和 NCM 内嵌的 MP3/FLAC 外，其余格式取决于当前 Windows 版本、系统组件、文件容器和实际编码。以下文件不保证可用：
-
-- 受 DRM 保护或需要在线授权的文件
-- 内容损坏、扩展名与真实编码不一致的文件
-- 系统没有对应解码器的扩展格式
-- 使用非标准封装或特殊编码参数的文件
-
-兼容性优先时，建议先将歌曲转换为 WAV、MP3 或 FLAC。NCM 功能仅用于用户本人有权访问的本地文件。
-
-## 分离方法与模型参数
-
-程序采用双模型集成。两条推理路径分别估计人声的复数频谱掩码，在时域得到两份人声波形后等权融合。伴奏不由第三个模型单独预测，而是用原始混合信号减去融合后的人声：
+```mermaid
+flowchart TD
+    A["歌曲文件"] --> B["解码为 44.1 kHz 双声道"]
+    B --> C["STFT 与分块"]
+    C --> D["BS-RoFormer：人声估计"]
+    D --> E["释放 BS 会话，再运行 Mel-Band RoFormer"]
+    E --> F["iSTFT、重叠合成、双模型等权融合"]
+    F --> G["人声 WAV"]
+    B --> H["混合信号减人声并限幅"]
+    F --> H
+    H --> I["伴奏 WAV"]
+    style C fill:#eaf3ff,stroke:#0969da
+    style F fill:#eaf7ee,stroke:#16803c
+    style H fill:#fff4dc,stroke:#9a6700
+```
 
 ```text
-vocals       = 0.5 * BS-Roformer(mixture) + 0.5 * Mel-Band-Roformer(mixture)
+vocals       = 0.5 * BS(mixture) + 0.5 * Mel(mixture)
 instrumental = clamp(mixture - vocals, -1.0, 1.0)
 ```
 
-### 架构背景
+两套模型串行创建和释放，避免同时常驻内存。两条路径分别预测人声复数频谱掩码，经过逆变换与分块合成后，在时域等权融合；伴奏由混合信号减去人声得到。
 
-[BS-RoFormer](https://arxiv.org/abs/2309.02612) 由 Wei-Tsung Lu、Ju-Chiang Wang、Qiuqiang Kong 和 Yun-Ning Hung 提出。它沿用 Band-Split RNN 的频带拆分思路，将复数频谱划分为不重叠子带，再交替沿时间轴和频带轴执行 Transformer。RoPE 旋转位置编码用于表达帧序和频带位置。论文中的完整系统使用 MUSDB18-HQ 与额外 500 首歌曲训练，并在 Sound Demixing Challenge 2023 的音乐分离赛道取得第一名；这是论文系统的背景结果，不等同于本项目双模型融合后的实测指标。
+| 模型 | 当前形式 | 作用 |
+| --- | --- | --- |
+| BS-RoFormer | opset 18，动态 uint8 量化，约 159.8M 参数 | 第一份人声估计 |
+| Mel-Band RoFormer | opset 17，float32，33,666,916 个权重与常量值 | 第二份人声估计 |
 
-[Mel-Band RoFormer](https://arxiv.org/abs/2310.01809) 是 Ju-Chiang Wang、Wei-Tsung Lu 和 Minz Won 的后续工作。它保留时间轴/频带轴两级 Transformer 和 RoPE，将经验设定的不重叠频带改为相互重叠的 Mel 频带。频带密度随听觉尺度分配，多个频带覆盖同一 FFT 单元时再聚合预测。论文在 MUSDB18-HQ 上报告了人声、鼓和 other 等分轨相对 BS-RoFormer 的改进。
+论文、上游检查点、转换来源、张量核对记录、FFT 参数与输入输出形状见 [模型与推理参考](docs/models.md)。检查点名称中的 SDR 是上游发布标记，不是本应用的实测指标，也不保证所有歌曲具有相同效果。
 
-两种架构的公开 PyTorch 实现来自 [lucidrains/BS-RoFormer](https://github.com/lucidrains/BS-RoFormer)，本项目所用训练配置和检查点体系来自 [ZFTurbo/Music-Source-Separation-Training](https://github.com/ZFTurbo/Music-Source-Separation-Training)。
+## 技术与目录
 
-### 权重与转换来源
-
-| 本地文件 | 已确认的上游资产 | 检查点背景 | 当前 ONNX 形式 |
-| --- | --- | --- | --- |
-| `bs_roformer_quantized.onnx` | [`xycld/BS-RoFormer-ONNX`](https://huggingface.co/xycld/BS-RoFormer-ONNX) 的 `bs_roformer_ep317_sdr12.9755_quantized_uint8.onnx` | viperx 训练的 `model_bs_roformer_ep_317_sdr_12.9755.ckpt`；上游模型卡记录训练数据为 MUSDB18-HQ 加 500 首额外歌曲 | ONNX opset 18，uint8 动态量化，约 `159.8M` 参数 |
-| `mel_band_roformer_vocals.onnx` | [ZFTurbo v1.0.0](https://github.com/ZFTurbo/Music-Source-Separation-Training/releases/tag/v1.0.0) 的 `model_vocals_mel_band_roformer_sdr_8.42.ckpt` | 检查点内部标识为 `model_ep_122_sdr_8.4262`；发布页未记录具体训练数据构成 | ONNX opset 17，float32，`33,666,916` 个权重及常量值 |
-
-BS 文件与上游量化文件的大小及 SHA-256 完全一致，只在项目中缩短了文件名。上游模型卡把原始权重归于 viperx，并指向 TRvlvr 的公开模型仓库；`12.9755` 是检查点发布名称中的 SDR 标记，不是本项目重新测得的结果。
-
-Mel 文件与 ZFTurbo 检查点的模型结构完全对齐，且抽取出的 `337` 个同名张量均逐字节一致，没有发现不匹配项。对应的公开配置是 [`config_vocals_mel_band_roformer.yaml`](https://github.com/ZFTurbo/Music-Source-Separation-Training/blob/main/configs/config_vocals_mel_band_roformer.yaml)：隐藏维度 `192`、`8` 层、`8` 个注意力头、head 维度 `64`、`60` 个 Mel 频带、单人声目标。当前文件是移除 STFT/iSTFT 的网络核心导出，ONNX 元数据只记录 `PyTorch 2.10.0`，没有保留转换脚本作者信息。
-
-上述论文与代码实现采用公开许可，不代表训练素材中的全部音频自动取得相同许可。发布或商用前，应分别核对代码、模型权重和训练数据的授权条件。两个发布名称中的 SDR 数值来自各自上游，不宜直接横向比较，也不代表任意歌曲上的固定分离质量。
-
-### 处理流程
-
-1. 输入音频统一解码为 `44.1 kHz`、双声道、32 位浮点采样。
-2. 每个声道使用 `2048` 点 Hann 窗进行短时傅里叶变换，得到 `1025` 个非负频率单元。窗口以帧中心对齐，边界采用反射填充。
-3. BS-Roformer 接收按时间排列的双声道复数频谱，输出人声复数掩码。
-4. Mel-Band Roformer 按 60 个 Slaney Mel 三角频带的覆盖范围重排频率单元，输出第二份人声复数掩码。重叠频带还原到线性频率轴时取平均值。
-5. 两条路径分别执行逆短时傅里叶变换，并对相邻分块做加权重叠合成。
-6. 两份人声估计以 `0.5 : 0.5` 融合；伴奏由混合信号相减得到。
-
-### 有效推理参数
-
-| 参数 | BS-Roformer | Mel-Band Roformer |
-| --- | ---: | ---: |
-| 模型文件 | `bs_roformer_quantized.onnx` | `mel_band_roformer_vocals.onnx` |
-| 隐藏维度 / 主干层数 | `512` / `12` | `192` / `8` |
-| 注意力头数 / head 维度 | `8` / `64` | `8` / `64` |
-| 时间 / 频带 Transformer 深度 | `1` / `1` | `1` / `1` |
-| 频带划分 | `62` 个不重叠频带 | `60` 个重叠 Mel 频带 |
-| 掩码估计器深度 | `2` | `2` |
-| 目标 stem 数 | `1`，人声 | `1`，人声 |
-| 权重规模 / 精度 | 约 `159.8M`，矩阵权重动态 uint8 量化 | `33,666,916` 个 float32 权重及常量值 |
-| 采样率 / 声道 | `44,100 Hz` / `2` | `44,100 Hz` / `2` |
-| FFT 点数 / 频率单元 | `2048` / `1025` | `2048` / `1025` |
-| STFT 步长 | `441` 采样，`10 ms` | `512` 采样，约 `11.61 ms` |
-| 单块长度 | `352,800` 采样，`8 s` | `131,584` 采样，约 `2.984 s` |
-| 单块帧数 | `801` | `258` |
-| 分块策略 | 步长 `176,400` 采样，固定 `50%` 重叠 | 默认 `8%` 重叠，步长 `121,057` 采样 |
-| 边缘合成 | `35,280` 采样线性淡入淡出 | 按相邻块的实际交叠长度线性加权 |
-| ONNX 输入形状 | `[1, 801, 4100]` | `[1, 3958, 258, 2]` |
-| ONNX 输出形状 | `[1, 1, 2050, 801, 2]` | `[1, 1, 3958, 258, 2]` |
-| 输出含义 | 双声道人声复数掩码 | 按 Mel 频带展开的人声复数掩码 |
-
-BS 输入的 `4100` 由 `1025` 个频率单元、`2` 个声道及实部/虚部组成。Mel 输入的 `3958` 是 60 个 Mel 频带覆盖的有效频率单元按双声道展开后的数量，末维 `2` 表示实部和虚部。
-
-两套模型串行运行：BS 会话完成后立即释放，再创建 Mel 会话，避免两套模型同时常驻内存。ONNX Runtime 启用全部图优化，执行模式为顺序执行；算子内线程数按处理器逻辑线程数设置，范围为 `1` 至 `4`，算子间线程数固定为 `1`。当前发布包使用 CPU 推理，不包含 CUDA 执行提供程序。
-
-源码中的 `segmentSize=256` 和 `batchSize=1` 是保留的兼容字段，当前固定形状的 ONNX 推理没有使用它们，因此不列为可调参数。实际参与分块调度的是 Mel 路径的 `overlap`，默认值为 `8`，内部限制范围为 `0` 至 `90`。
-
-## 输出与限制
-
-每首歌曲默认生成两个文件：
-
-```text
-歌曲名_vocals.wav
-歌曲名_instrumental.wav
-```
-
-输出规格固定为：
-
-| 项目 | 规格 |
+| 路径 | 技术与职责 |
 | --- | --- |
-| 采样率 | `44.1 kHz` |
-| 声道 | 双声道 |
-| 格式 | `32` 位浮点 WAV |
-| 单首最大长度 | `15` 分钟 |
-
-需要注意：
-
-- 程序不会覆盖输入歌曲。
-- 再次处理同名歌曲时，同名输出 WAV 可能被替换。
-- 输入目录中的子目录结构不会复制到输出目录。不同子目录里具有相同文件名的歌曲会产生同名输出，请分批处理或使用不同输出目录。
-- NCM 解包产生的中间文件保存在输出目录的 `.ncm_decoded` 子目录。
-- 两份浮点 WAV 的体积通常明显大于原始压缩音频，请预留足够磁盘空间。
-
-## 发布包
-
-完整运行目录约 `315 MB`，其中 `UARMusic.exe` 约 `2 MB`。主要体积来自两套内置分离模型，而不是界面或解码组件。
-
-```text
-UARMusic-win-x64/
-|-- UARMusic.exe
-|-- onnxruntime.dll
-|-- onnxruntime_providers_shared.dll
-|-- THIRD_PARTY_NOTICES.md
-|-- licenses/
-|   |-- lucide/
-|   `-- onnxruntime/
-`-- models/
-    |-- bs_roformer_quantized.onnx
-    `-- mel_band_roformer_vocals.onnx
-```
-
-模型文件校验信息：
-
-| 文件 | 大小 | SHA-256 |
-| --- | ---: | --- |
-| `bs_roformer_quantized.onnx` | `165,858,657` 字节 | `B86B6224FF34D6D34C2530E0D41495B6A2C12DB46ACC1A7A5C7F64D2352807E9` |
-| `mel_band_roformer_vocals.onnx` | `135,441,533` 字节 | `BD42C4B3339F43B41BACEB2A0204C941744F43911A47F006DF5B62E560F91CC1` |
+| [src/main.cpp](src/main.cpp) | Win32 窗口、任务状态、文件列表与交互 |
+| [src/audio_engine.cpp](src/audio_engine.cpp) | miniaudio、Media Foundation、音频解码与试听 |
+| [src/separation_engine.cpp](src/separation_engine.cpp) | ONNX Runtime、频谱变换、模型调度、融合与输出 |
+| [src/lucide_icons.h](src/lucide_icons.h) | 本地图标 |
+| [CMakeLists.txt](CMakeLists.txt) | C++17 构建、模型校验与安装目录 |
+| [models/](models/) | Git LFS 管理的两套 ONNX 权重 |
+| [third_party/](third_party/) | 音频、推理运行时与许可材料 |
+| [testdata/in/sample.wav](testdata/in/sample.wav) | 人工冒烟验证样例 |
 
 ## 从源码构建
 
-### 环境要求
-
-- Windows 10 或 Windows 11 x64
-- CMake `3.20` 或更高版本
-- Ninja
-- 支持 C++17 的 MinGW-w64 工具链
-- Git LFS
-
-仓库包含 miniaudio、Lucide 图标数据和裁剪后的 ONNX Runtime `1.20.1` Windows x64 SDK。两套模型通过 Git LFS 管理。
-
-### 获取模型并编译
-
-在仓库根目录运行：
+需要 Windows x64、CMake 3.20+、Ninja、MinGW-w64 和 Git LFS。克隆时必须取回模型大文件：
 
 ```powershell
+git clone https://github.com/wed957/music-separation.git
+cd music-separation
 git lfs install
 git lfs pull
-
-cmake -S . -B build -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-```
-
-构建完成后，可直接运行：
-
-```text
-build/bin/UARMusic.exe
-```
-
-生成独立发布目录：
-
-```powershell
 cmake --install build --prefix dist/UARMusic-win-x64
 ```
 
-### 自定义依赖路径
+CMake 配置阶段核对模型大小和 SHA-256；LFS 指针、缺失 DLL 或错误权重会导致配置失败。模型校验以 [CMakeLists.txt](CMakeLists.txt) 为准，不要仅修改校验值来绕过错误。
 
-CMake 支持以下缓存参数：
+需要外部依赖位置时，使用以下 CMake 缓存参数：
 
-| 参数 | 用途 |
+| 参数 | 指向 |
 | --- | --- |
-| `UAR_ORT_ROOT` | ONNX Runtime Windows x64 SDK 根目录 |
-| `UAR_BS_MODEL_FILE` | BS Roformer 模型文件路径 |
-| `UAR_MEL_MODEL_FILE` | Mel-band Roformer 模型文件路径 |
+| `UAR_ORT_ROOT` | ONNX Runtime 1.20.1 Windows x64 SDK |
+| `UAR_BS_MODEL_FILE` | 完整 BS ONNX 文件 |
+| `UAR_MEL_MODEL_FILE` | 完整 Mel ONNX 文件 |
 
-示例：
+安装目录必须包含 EXE、`onnxruntime.dll`、`onnxruntime_providers_shared.dll`、`models/` 和许可材料。完整包约 315 MB，约 2 MB 的 EXE 不能单独完成推理。
 
-```powershell
-cmake -S . -B build -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DUAR_ORT_ROOT=C:/sdk/onnxruntime `
-  -DUAR_BS_MODEL_FILE=D:/models/bs_roformer_quantized.onnx `
-  -DUAR_MEL_MODEL_FILE=D:/models/mel_band_roformer_vocals.onnx
-```
+## 验证与排障
 
-模型参数用于改变文件位置，不表示支持任意 ONNX 模型。配置阶段会严格检查上表中的文件大小和 SHA-256；文件不匹配时构建会停止。自定义 ONNX Runtime 目录必须包含：
+当前仓库没有独立的自动化测试套件；构建成功不能替代音频结果验收。维护推理代码后，应使用 [样例](testdata/in/sample.wav) 核对两条输出的时长、采样率、声道、有限采样值，再试听与检查取消、批量、重名和错误输入行为。
 
-```text
-include/onnxruntime_cxx_api.h
-lib/onnxruntime.lib
-bin/onnxruntime.dll
-bin/onnxruntime_providers_shared.dll
-```
+| 现象 | 优先检查 |
+| --- | --- |
+| 程序无法启动 | DLL 是否与 EXE 一起解压，是否使用 x64 Windows |
+| CMake 提示模型不完整 | Git LFS 是否完成下载，模型路径和哈希是否正确 |
+| 文件无法处理 | 实际编码是否可解码，必要时先转 WAV |
+| 歌曲太长 | 先裁剪至 15 分钟以内 |
+| 输出被覆盖 | 是否存在不同目录下的同名输入 |
+| 分离较慢 | 当前使用 CPU，长歌曲和两套模型需要更多时间 |
 
-官方 SDK 若把 DLL 放在 `lib` 目录，构建脚本也会自动识别。
+## 维护与 Agent 接手
 
-## 项目结构
+先读本页、[模型参考](docs/models.md) 与 [第三方说明](THIRD_PARTY_NOTICES.md)，再按界面、解码、推理三个层次定位代码。
 
-```text
-music-separation/
-|-- src/                     # Win32 界面、音频解码和分离引擎
-|-- resources/               # Windows 资源与应用清单
-|-- models/                  # Git LFS 管理的 ONNX 模型
-|-- third_party/             # miniaudio、Lucide 许可和 ONNX Runtime SDK
-|-- docs/images/             # README 界面截图
-|-- testdata/                # 本地冒烟测试音频
-|-- CMakeLists.txt
-|-- THIRD_PARTY_NOTICES.md
-`-- README.md
-```
+推理变更应核对采样布局、STFT/iSTFT、模型固定形状、分块边界和释放顺序；`segmentSize` / `batchSize` 是保留的兼容字段，不应当作当前有效调参入口。替换权重时同步来源记录、哈希、张量形状和 CMake 打包契约。
 
-核心模块：
-
-- `src/main.cpp`：窗口、主题、目录选择、任务调度和进度界面
-- `src/audio_engine.cpp`：目录扫描、音频解码、重采样、NCM 解包和 WAV 写入
-- `src/separation_engine.cpp`：双模型推理、分块、融合和双轨生成
-- `src/lucide_icons.h`：界面统一使用的 Lucide 矢量图标
-
-## 隐私与使用边界
-
-- 分离过程在本机完成，程序不会上传歌曲。
-- 程序不会修改原始输入文件。
-- 项目不提供受保护内容的分发能力。
-- 使用 NCM、本地歌曲和分离结果时，请确保拥有相应访问权和使用权。
-- 模型属于第三方训练资产，使用、再分发或商业发布前请确认其来源与许可条件。
-
-第三方组件及许可信息见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 故障排查
-
-### 程序无法启动
-
-确认已完整解压发布包，且 `UARMusic.exe`、两个 ONNX Runtime DLL 和 `models` 目录保持原有相对位置。当前构建仅支持 Windows x64。
-
-### 找到了歌曲但无法处理
-
-先用 WAV、MP3 或 FLAC 文件验证。对于 AAC、M4A、WMA、Ogg、Opus 等扩展格式，失败通常表示 Windows Media Foundation 无法解码该文件；可先用可信的音频工具转为 WAV 或 FLAC。受 DRM 保护的文件无法处理。
-
-### 提示歌曲太长
-
-单首歌曲解码后的长度上限为 15 分钟。请先裁剪或分段后再处理。
-
-### CMake 提示模型不完整
-
-确认 Git LFS 已安装，并重新拉取模型：
-
-```powershell
-git lfs install
-git lfs pull
-git lfs ls-files
-```
-
-若问题仍存在，请用 `Get-FileHash -Algorithm SHA256 <模型路径>` 与本文的校验值比较。
-
-### 输出文件互相覆盖
-
-程序按输入文件的基础名称生成输出，不保留输入目录层级。把同名歌曲分批放入不同输入目录，或为每批任务选择不同输出目录。
+歌曲在本机处理；获取源码、模型和发行包仍需要网络。代码、模型权重和训练素材各自有许可边界，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，不要把上游训练素材默认视为可再分发资源。
