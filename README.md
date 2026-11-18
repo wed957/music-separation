@@ -73,12 +73,15 @@ instrumental = clamp(mixture - vocals, -1.0, 1.0)
 | --- | --- |
 | [src/main.cpp](src/main.cpp) | Win32 窗口、任务状态、文件列表与交互 |
 | [src/audio_engine.cpp](src/audio_engine.cpp) | miniaudio、Media Foundation、音频解码与试听 |
-| [src/separation_engine.cpp](src/separation_engine.cpp) | ONNX Runtime、频谱变换、模型调度、融合与输出 |
+| [src/signal_processing.cpp](src/signal_processing.cpp) | 可复用的 FFT、中心对齐 reflect-pad STFT/iSTFT 与声道布局转换 |
+| [src/separation_engine.cpp](src/separation_engine.cpp) | ONNX Runtime、模型契约校验、边界扩展、分块融合与原子写入 |
 | [src/lucide_icons.h](src/lucide_icons.h) | 本地图标 |
 | [CMakeLists.txt](CMakeLists.txt) | C++17 构建、模型校验与安装目录 |
 | [models/](models/) | Git LFS 管理的两套 ONNX 权重 |
 | [third_party/](third_party/) | 音频、推理运行时与许可材料 |
 | [testdata/in/sample.wav](testdata/in/sample.wav) | 人工冒烟验证样例 |
+| [tests/](tests/) | 信号处理往返与重采样 C++ 回归测试 |
+| [docs/ALGORITHM_REFACTOR_20260910.md](docs/ALGORITHM_REFACTOR_20260910.md) | 2026-09-10 FFT/STFT 与输出原子写入重构说明 |
 
 ## 从源码构建
 

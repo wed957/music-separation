@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.20)
 
 project(UARMusic VERSION 1.0.1 LANGUAGES CXX)
 
+include(CTest)
+
 # 依赖目录不写死在源码中，便于在干净的工作区或 CI 中构建。
 set(UAR_ORT_ROOT "" CACHE PATH
     "ONNX Runtime 1.20.1 Windows x64 SDK 根目录")
@@ -74,10 +76,52 @@ add_executable(UARMusic WIN32
     src/main.cpp
     src/lucide_icons.h
     src/audio_engine.cpp
+    src/signal_processing.cpp
     src/separation_engine.cpp
     resources/app.rc
     resources/app.manifest
 )
+
+if(BUILD_TESTING)
+    add_executable(signal_processing_test
+        tests/signal_processing_test.cpp
+        src/signal_processing.cpp
+    )
+    target_compile_features(signal_processing_test PRIVATE cxx_std_17)
+    add_test(NAME signal_processing_round_trip COMMAND signal_processing_test)
+
+    if(WIN32)
+        add_executable(audio_engine_resampling_test
+            tests/audio_engine_resampling_test.cpp
+            src/audio_engine.cpp
+        )
+        target_compile_features(audio_engine_resampling_test PRIVATE cxx_std_17)
+        target_compile_definitions(audio_engine_resampling_test PRIVATE
+            UNICODE
+            _UNICODE
+            WIN32_LEAN_AND_MEAN
+            NOMINMAX
+        )
+        target_link_libraries(audio_engine_resampling_test PRIVATE
+            bcrypt
+            mfplat
+            mfreadwrite
+            mfuuid
+            ole32
+            uuid
+        )
+        if(MINGW)
+            target_compile_options(audio_engine_resampling_test PRIVATE
+                -Wall -Wextra -Wpedantic
+            )
+            target_link_options(audio_engine_resampling_test PRIVATE
+                -static-libgcc
+                -static-libstdc++
+            )
+        endif()
+        add_test(NAME audio_engine_resampling COMMAND audio_engine_resampling_test)
+    endif()
+endif()
 
 target_compile_features(UARMusic PRIVATE cxx_std_17)
 target_compile_definitions(UARMusic PRIVATE

@@ -19,7 +19,8 @@ struct AudioBuffer {
     bool empty() const { return samples.empty(); }
 };
 
-bool LoadAudio(const std::filesystem::path& path, AudioBuffer& audio, std::string& error);
+bool LoadAudio(const std::filesystem::path& path, AudioBuffer& audio, std::string& error,
+               std::atomic_bool* cancel = nullptr);
 bool WriteWav(const std::filesystem::path& path, const AudioBuffer& audio, std::string& error);
 
 // 将用户有权访问的本地 NCM 文件解包为临时 MP3/FLAC 文件。不会联网，也不会修改源文件。

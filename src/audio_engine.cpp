@@ -126,6 +126,30 @@ private:
     T* value_ = nullptr;
 };
 
+class MediaBufferLock {
+public:
+    explicit MediaBufferLock(IMFMediaBuffer* buffer) : buffer_(buffer) {
+        result_ = buffer_->Lock(&bytes_, nullptr, &byteCount_);
+    }
+
+    ~MediaBufferLock() {
+        if (SUCCEEDED(result_)) buffer_->Unlock();
+    }
+
+    MediaBufferLock(const MediaBufferLock&) = delete;
+    MediaBufferLock& operator=(const MediaBufferLock&) = delete;
+
+    HRESULT result() const noexcept { return result_; }
+    BYTE* bytes() const noexcept { return bytes_; }
+    DWORD byteCount() const noexcept { return byteCount_; }
+
+private:
+    IMFMediaBuffer* buffer_ = nullptr;
+    BYTE* bytes_ = nullptr;
+    DWORD byteCount_ = 0;
+    HRESULT result_ = E_FAIL;
+};
+
 std::string MediaFoundationError(const std::filesystem::path& path, HRESULT result) {
     std::ostringstream out;
     out << "系统解码器无法读取音频: " << PathText(path)
@@ -160,7 +184,8 @@ float ReadPcmSample(const unsigned char* data, UINT32 bitsPerSample) {
 }
 
 bool ConvertToStereo44100(const std::vector<float>& source, UINT32 sourceRate,
-                          UINT32 sourceChannels, AudioBuffer& audio, std::string& error) {
+                          UINT32 sourceChannels, AudioBuffer& audio, std::string& error,
+                          std::atomic_bool* cancel) {
     if (source.empty() || sourceRate == 0 || sourceChannels == 0 ||
         source.size() % sourceChannels != 0) {
         error = "系统解码器返回了无效音频数据";
@@ -168,7 +193,8 @@ bool ConvertToStereo44100(const std::vector<float>& source, UINT32 sourceRate,
     }
     const size_t sourceFrames = source.size() / sourceChannels;
     const double outputFrameEstimate = static_cast<double>(sourceFrames) * 44100.0 / sourceRate;
-    if (outputFrameEstimate > static_cast<double>(kMaxDecodedFrames)) {
+    if (outputFrameEstimate > static_cast<double>(kMaxDecodedFrames) ||
+        outputFrameEstimate > static_cast<double>(std::numeric_limits<size_t>::max() / 2)) {
         error = "音频文件过大";
         return false;
     }
@@ -177,10 +203,14 @@ bool ConvertToStereo44100(const std::vector<float>& source, UINT32 sourceRate,
     audio.channels = 2;
     audio.samples.resize(outputFrames * 2);
 
-    auto channel = [&](size_t frame, UINT32 index) {
-        return source[frame * sourceChannels + std::min(index, sourceChannels - 1)];
+    auto channel = [&](long long frame, UINT32 index) {
+        const long long last = static_cast<long long>(sourceFrames - 1);
+        frame = std::clamp(frame, 0LL, last);
+        const float value = source[static_cast<size_t>(frame) * sourceChannels +
+                                   std::min(index, sourceChannels - 1)];
+        return std::isfinite(value) ? value : 0.0f;
     };
-    auto stereo = [&](size_t frame, UINT32 side) {
+    auto stereo = [&](long long frame, UINT32 side) {
         if (sourceChannels == 1) return channel(frame, 0);
         float value = channel(frame, side);
         float weight = 1.0f;
@@ -195,23 +225,63 @@ bool ConvertToStereo44100(const std::vector<float>& source, UINT32 sourceRate,
         return value / weight;
     };
 
-    const double ratio = static_cast<double>(sourceRate) / 44100.0;
+    if (sourceRate == 44100) {
+        for (size_t frame = 0; frame < outputFrames; ++frame) {
+            if (cancel && (frame & 4095u) == 0 && cancel->load()) {
+                audio = {};
+                error = "已取消";
+                return false;
+            }
+            audio.samples[frame * 2] = stereo(frame, 0);
+            audio.samples[frame * 2 + 1] = stereo(frame, 1);
+        }
+        return !audio.empty();
+    }
+
+    // A short windowed-sinc kernel preserves high-frequency content when the
+    // decoder returns a rate other than 44.1 kHz.  Linear interpolation caused
+    // audible roll-off on 48/96 kHz input and produced a different spectrum
+    // for the two model paths.
+    constexpr int radius = 16;
+    constexpr double pi = 3.14159265358979323846;
+    const double sourcePerOutput = static_cast<double>(sourceRate) / 44100.0;
+    const double cutoff = std::min(1.0, 1.0 / sourcePerOutput);
     for (size_t frame = 0; frame < outputFrames; ++frame) {
-        const double sourcePosition = static_cast<double>(frame) * ratio;
-        const size_t first = std::min(static_cast<size_t>(sourcePosition), sourceFrames - 1);
-        const size_t second = std::min(first + 1, sourceFrames - 1);
-        const float mix = static_cast<float>(sourcePosition - first);
+        if (cancel && (frame & 4095u) == 0 && cancel->load()) {
+            audio = {};
+            error = "已取消";
+            return false;
+        }
+        const double sourcePosition = static_cast<double>(frame) * sourcePerOutput;
+        const long long center = static_cast<long long>(std::floor(sourcePosition));
         for (UINT32 side = 0; side < 2; ++side) {
-            const float a = stereo(first, side);
-            const float b = stereo(second, side);
-            audio.samples[frame * 2 + side] = a + (b - a) * mix;
+            double value = 0.0;
+            double normalization = 0.0;
+            for (long long sample = center - radius + 1;
+                 sample <= center + radius; ++sample) {
+                const double distance = sourcePosition - static_cast<double>(sample);
+                if (std::abs(distance) > radius) continue;
+                const double scaled = distance * cutoff;
+                const double sinc = std::abs(scaled) < 1.0e-12
+                    ? 1.0
+                    : std::sin(pi * scaled) / (pi * scaled);
+                const double window = 0.5 *
+                    (1.0 + std::cos(pi * distance / static_cast<double>(radius)));
+                const double coefficient = sinc * window * cutoff;
+                value += static_cast<double>(stereo(sample, side)) * coefficient;
+                normalization += coefficient;
+            }
+            if (std::abs(normalization) > 1.0e-9) value /= normalization;
+            if (!std::isfinite(value)) value = 0.0;
+            audio.samples[frame * 2 + side] = static_cast<float>(value);
         }
     }
     return !audio.empty();
 }
 
 bool LoadAudioWithMediaFoundation(const std::filesystem::path& path,
-                                  AudioBuffer& audio, std::string& error) {
+                                  AudioBuffer& audio, std::string& error,
+                                  std::atomic_bool* cancel) {
     const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool uninitializeCom = SUCCEEDED(comResult);
     if (FAILED(comResult) && comResult != RPC_E_CHANGED_MODE) {
@@ -274,6 +344,10 @@ bool LoadAudioWithMediaFoundation(const std::filesystem::path& path,
 
     std::vector<float> sourceSamples;
     while (SUCCEEDED(result)) {
+        if (cancel && cancel->load()) {
+            result = E_ABORT;
+            break;
+        }
         DWORD flags = 0;
         ComObject<IMFSample> sample;
         result = reader->ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0,
@@ -284,18 +358,37 @@ bool LoadAudioWithMediaFoundation(const std::filesystem::path& path,
         ComObject<IMFMediaBuffer> buffer;
         result = sample->ConvertToContiguousBuffer(buffer.put());
         if (FAILED(result)) break;
-        BYTE* bytes = nullptr;
-        DWORD byteCount = 0;
-        result = buffer->Lock(&bytes, nullptr, &byteCount);
+        MediaBufferLock lockedBuffer(buffer.get());
+        result = lockedBuffer.result();
         if (FAILED(result)) break;
+        const BYTE* bytes = lockedBuffer.bytes();
+        const DWORD byteCount = lockedBuffer.byteCount();
+        const size_t bytesPerSample = isFloat ? sizeof(float) : bitsPerSample / 8;
+        const size_t sampleCount = bytesPerSample > 0
+            ? byteCount / bytesPerSample : 0;
+        if (sampleCount > std::numeric_limits<size_t>::max() - sourceSamples.size()) {
+            result = E_OUTOFMEMORY;
+            break;
+        }
+        // Reject a stream before appending a buffer that would exceed the
+        // decoded-frame limit. This keeps malformed high-rate files bounded.
+        const size_t nextSampleCount = sourceSamples.size() + sampleCount;
+        const double decodedFrames = sourceChannels > 0
+            ? static_cast<double>(nextSampleCount) / sourceChannels : 0.0;
+        if (sourceChannels == 0 || decodedFrames * 44100.0 /
+                std::max<UINT32>(1, sourceRate) > kMaxDecodedFrames) {
+            result = E_OUTOFMEMORY;
+            break;
+        }
         if (isFloat) {
-            const size_t sampleCount = byteCount / sizeof(float);
             const size_t start = sourceSamples.size();
             sourceSamples.resize(start + sampleCount);
-            std::memcpy(sourceSamples.data() + start, bytes, sampleCount * sizeof(float));
+            for (size_t index = 0; index < sampleCount; ++index) {
+                float value = 0.0f;
+                std::memcpy(&value, bytes + index * sizeof(float), sizeof(float));
+                sourceSamples[start + index] = std::isfinite(value) ? value : 0.0f;
+            }
         } else {
-            const size_t bytesPerSample = bitsPerSample / 8;
-            const size_t sampleCount = bytesPerSample > 0 ? byteCount / bytesPerSample : 0;
             const size_t start = sourceSamples.size();
             sourceSamples.resize(start + sampleCount);
             for (size_t index = 0; index < sampleCount; ++index) {
@@ -303,18 +396,14 @@ bool LoadAudioWithMediaFoundation(const std::filesystem::path& path,
                                                              bitsPerSample);
             }
         }
-        buffer->Unlock();
-        const double decodedFrames = sourceChannels > 0
-            ? static_cast<double>(sourceSamples.size()) / sourceChannels : 0.0;
-        if (decodedFrames * 44100.0 / std::max<UINT32>(1, sourceRate) > kMaxDecodedFrames) {
-            result = E_OUTOFMEMORY;
-            break;
-        }
     }
 
     bool converted = false;
-    if (SUCCEEDED(result)) {
-        converted = ConvertToStereo44100(sourceSamples, sourceRate, sourceChannels, audio, error);
+    if (cancel && cancel->load()) {
+        error = "已取消";
+    } else if (SUCCEEDED(result)) {
+        converted = ConvertToStereo44100(sourceSamples, sourceRate, sourceChannels, audio,
+                                         error, cancel);
     } else {
         error = MediaFoundationError(path, result);
     }
@@ -328,13 +417,15 @@ bool LoadAudioWithMediaFoundation(const std::filesystem::path& path,
 
 } // namespace
 
-bool LoadAudio(const std::filesystem::path& path, AudioBuffer& audio, std::string& error) {
+bool LoadAudio(const std::filesystem::path& path, AudioBuffer& audio, std::string& error,
+               std::atomic_bool* cancel) {
     audio = {};
+    if (cancel && cancel->load()) { error = "已取消"; return false; }
     ma_decoder_config config = ma_decoder_config_init(ma_format_f32, 2, 44100);
     ma_decoder decoder{};
     const ma_result initResult = ma_decoder_init_file_w(path.c_str(), &config, &decoder);
     if (initResult != MA_SUCCESS) {
-        return LoadAudioWithMediaFoundation(path, audio, error);
+        return LoadAudioWithMediaFoundation(path, audio, error, cancel);
     }
     ma_uint64 frameCount = 0;
     if (ma_decoder_get_length_in_pcm_frames(&decoder, &frameCount) != MA_SUCCESS || frameCount == 0) {
@@ -350,16 +441,48 @@ bool LoadAudio(const std::filesystem::path& path, AudioBuffer& audio, std::strin
     }
     audio.sampleRate = 44100;
     audio.channels = 2;
-    audio.samples.resize(static_cast<size_t>(frameCount) * 2);
-    ma_uint64 readFrames = 0;
-    const ma_result readResult = ma_decoder_read_pcm_frames(&decoder, audio.samples.data(), frameCount, &readFrames);
+    constexpr ma_uint64 readChunkFrames = 65536;
+    std::vector<float> readBuffer(static_cast<size_t>(readChunkFrames) * 2);
+    audio.samples.reserve(static_cast<size_t>(frameCount) * 2);
+    ma_uint64 totalFrames = 0;
+    ma_result readResult = MA_SUCCESS;
+    while (totalFrames < frameCount) {
+        if (cancel && cancel->load()) {
+            ma_decoder_uninit(&decoder);
+            audio = {};
+            error = "已取消";
+            return false;
+        }
+        const ma_uint64 requested = std::min(readChunkFrames, frameCount - totalFrames);
+        ma_uint64 readFrames = 0;
+        readResult = ma_decoder_read_pcm_frames(&decoder, readBuffer.data(), requested, &readFrames);
+        if (readResult != MA_SUCCESS && readResult != MA_AT_END) break;
+        if (readFrames == 0) break;
+        const size_t begin = audio.samples.size();
+        audio.samples.resize(begin + static_cast<size_t>(readFrames) * 2);
+        for (size_t index = 0; index < static_cast<size_t>(readFrames) * 2; ++index) {
+            const float value = readBuffer[index];
+            audio.samples[begin + index] = std::isfinite(value) ? value : 0.0f;
+        }
+        totalFrames += readFrames;
+        if (readResult == MA_AT_END) break;
+    }
     ma_decoder_uninit(&decoder);
     if (readResult != MA_SUCCESS && readResult != MA_AT_END) {
         audio = {};
         error = "读取音频采样失败: " + PathText(path);
         return false;
     }
-    audio.samples.resize(static_cast<size_t>(readFrames) * 2);
+    if (totalFrames == 0) {
+        audio = {};
+        error = "音频没有可读采样: " + PathText(path);
+        return false;
+    }
+    if (totalFrames < frameCount && readResult == MA_SUCCESS) {
+        audio = {};
+        error = "读取音频采样不完整: " + PathText(path);
+        return false;
+    }
     return !audio.samples.empty();
 }
 
@@ -369,7 +492,13 @@ bool WriteWav(const std::filesystem::path& path, const AudioBuffer& audio, std::
         return false;
     }
     std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path(), ec);
+        if (ec) {
+            error = "无法创建 WAV 输出目录: " + PathText(path.parent_path());
+            return false;
+        }
+    }
     ma_encoder_config config = ma_encoder_config_init(ma_encoding_format_wav, ma_format_f32,
                                                       static_cast<ma_uint32>(audio.channels),
                                                       static_cast<ma_uint32>(audio.sampleRate));

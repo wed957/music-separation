@@ -1,4 +1,5 @@
 #include "separation_engine.h"
+#include "signal_processing.h"
 
 #if defined(__MINGW32__) && __GNUC__ >= 16
 #undef _stdcall
@@ -6,13 +7,13 @@
 #endif
 
 #include <onnxruntime_cxx_api.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
 #include <memory>
-#include <numeric>
 #include <thread>
 #include <vector>
 #include <string_view>
@@ -40,157 +41,84 @@ constexpr int kBsPackedFreqs = kFreqs * kChannels;
 constexpr int kBsStep = kBsChunkSamples / 2;
 constexpr int kBsFadeSamples = kBsChunkSamples / 10;
 
-struct ComplexSpectrogram {
-    int channels = 2;
-    int frames = 0;
-    std::vector<std::complex<float>> values; // channel-major, freq-major, frame-major
-    std::complex<float>& at(int channel, int freq, int frame) {
-        return values[(static_cast<size_t>(channel) * kFreqs + static_cast<size_t>(freq)) *
-                      static_cast<size_t>(frames) + static_cast<size_t>(frame)];
-    }
-    const std::complex<float>& at(int channel, int freq, int frame) const {
-        return values[(static_cast<size_t>(channel) * kFreqs + static_cast<size_t>(freq)) *
-                      static_cast<size_t>(frames) + static_cast<size_t>(frame)];
-    }
+using signal::ComplexSpectrogram;
+using signal::FftPlan;
+using signal::InterleavedToPlanar;
+using signal::Istft;
+using signal::PlanarToAudio;
+using signal::ReflectIndex;
+using signal::Stft;
+
+struct ModelContract {
+    const char* name;
+    std::vector<int64_t> input;
+    std::vector<int64_t> output;
 };
 
-inline float Hann(int index, int size) {
-    return 0.5f - 0.5f * std::cos(2.0f * static_cast<float>(M_PI) * index / size);
-}
-
-int ReflectIndex(int index, int samples) noexcept {
-    if (samples <= 1) return 0;
-    const int period = 2 * (samples - 1);
-    int reflected = index % period;
-    if (reflected < 0) reflected += period;
-    return reflected < samples ? reflected : period - reflected;
-}
-
-class FftPlan {
-public:
-    explicit FftPlan(int size) : size_(size), roots_(static_cast<size_t>(size / 2)) {
-        for (int i = 0; i < size / 2; ++i) {
-            const float angle = -2.0f * static_cast<float>(M_PI) * i / size;
-            roots_[static_cast<size_t>(i)] = {std::cos(angle), std::sin(angle)};
-        }
-        bitReverse_.resize(static_cast<size_t>(size));
-        int bits = 0;
-        while ((1 << bits) < size) ++bits;
-        for (int i = 0; i < size; ++i) {
-            int x = i;
-            int r = 0;
-            for (int b = 0; b < bits; ++b) { r = (r << 1) | (x & 1); x >>= 1; }
-            bitReverse_[static_cast<size_t>(i)] = r;
-        }
-    }
-
-    void Forward(std::vector<std::complex<float>>& data) const {
-        for (int i = 0; i < size_; ++i) {
-            const int j = bitReverse_[static_cast<size_t>(i)];
-            if (i < j) std::swap(data[static_cast<size_t>(i)], data[static_cast<size_t>(j)]);
-        }
-        for (int length = 2; length <= size_; length <<= 1) {
-            const int half = length / 2;
-            const int stride = size_ / length;
-            for (int start = 0; start < size_; start += length) {
-                for (int i = 0; i < half; ++i) {
-                    const auto w = roots_[static_cast<size_t>(i * stride)];
-                    const auto even = data[static_cast<size_t>(start + i)];
-                    const auto odd = data[static_cast<size_t>(start + i + half)] * w;
-                    data[static_cast<size_t>(start + i)] = even + odd;
-                    data[static_cast<size_t>(start + i + half)] = even - odd;
-                }
-            }
-        }
-    }
-
-    void Inverse(std::vector<std::complex<float>>& data) const {
-        for (auto& item : data) item = std::conj(item);
-        Forward(data);
-        const float scale = 1.0f / size_;
-        for (auto& item : data) item = std::conj(item) * scale;
-    }
-
-private:
-    int size_;
-    std::vector<std::complex<float>> roots_;
-    std::vector<int> bitReverse_;
+const ModelContract kBsContract{
+    "BS-Roformer",
+    {1, kBsFrames, kBsPackedFreqs * 2},
+    {1, 1, kBsPackedFreqs, kBsFrames, 2},
 };
 
-void Stft(const std::vector<float>& planar, int channels, int samples, int hop,
-          ComplexSpectrogram& result, const FftPlan& fft) {
-    const int frames = 1 + samples / hop;
-    result.channels = channels;
-    result.frames = frames;
-    result.values.assign(static_cast<size_t>(channels) * kFreqs * frames, {});
-    std::vector<std::complex<float>> work(static_cast<size_t>(kNfft));
-    for (int channel = 0; channel < channels; ++channel) {
-        const float* input = samples > 0
-            ? planar.data() + static_cast<size_t>(channel) * samples
-            : nullptr;
-        for (int frame = 0; frame < frames; ++frame) {
-            const int center = frame * hop;
-            for (int n = 0; n < kNfft; ++n) {
-                const int source = center + n - kNfft / 2;
-                const float value = samples > 0 ? input[ReflectIndex(source, samples)] : 0.0f;
-                work[static_cast<size_t>(n)] = value * Hann(n, kNfft);
-            }
-            fft.Forward(work);
-            for (int freq = 0; freq < kFreqs; ++freq)
-                result.at(channel, freq, frame) = work[static_cast<size_t>(freq)];
-        }
+const ModelContract kMelContract{
+    "Mel-Band Roformer",
+    {1, kMelPackedFreqs, kMelFrames, 2},
+    {1, 1, kMelPackedFreqs, kMelFrames, 2},
+};
+
+bool MatchesShape(const std::vector<int64_t>& actual,
+                  const std::vector<int64_t>& expected) {
+    if (actual.size() != expected.size()) return false;
+    for (size_t index = 0; index < expected.size(); ++index)
+        if (actual[index] != expected[index]) return false;
+    return true;
+}
+
+bool WriteWavAtomically(const std::filesystem::path& destination,
+                        const AudioBuffer& audio, std::string& error) {
+    const std::wstring tag = std::wstring(L".tmp.") +
+        std::to_wstring(static_cast<unsigned long long>(GetCurrentProcessId())) +
+        L"." + std::to_wstring(static_cast<unsigned long long>(GetTickCount64()));
+    std::filesystem::path temporary = destination;
+    temporary += tag;
+    std::error_code ec;
+    std::filesystem::remove(temporary, ec);
+    if (!WriteWav(temporary, audio, error)) {
+        std::filesystem::remove(temporary, ec);
+        return false;
     }
-}
-
-void Istft(const ComplexSpectrogram& spectrogram, int outputSamples, int hop,
-           std::vector<float>& planar, const FftPlan& fft) {
-    planar.assign(static_cast<size_t>(spectrogram.channels) * outputSamples, 0.0f);
-    std::vector<float> weights(static_cast<size_t>(outputSamples), 0.0f);
-    std::vector<std::complex<float>> work(static_cast<size_t>(kNfft));
-    for (int channel = 0; channel < spectrogram.channels; ++channel) {
-        float* output = planar.data() + static_cast<size_t>(channel) * outputSamples;
-        std::fill(work.begin(), work.end(), std::complex<float>{});
-        std::fill(weights.begin(), weights.end(), 0.0f);
-        for (int frame = 0; frame < spectrogram.frames; ++frame) {
-            std::fill(work.begin(), work.end(), std::complex<float>{});
-            for (int freq = 0; freq < kFreqs; ++freq) {
-                work[static_cast<size_t>(freq)] = spectrogram.at(channel, freq, frame);
-                if (freq > 0 && freq < kFreqs - 1)
-                    work[static_cast<size_t>(kNfft - freq)] = std::conj(work[static_cast<size_t>(freq)]);
-            }
-            fft.Inverse(work);
-            const int offset = frame * hop - kNfft / 2;
-            for (int n = 0; n < kNfft; ++n) {
-                const int destination = offset + n;
-                if (destination < 0 || destination >= outputSamples) continue;
-                const float window = Hann(n, kNfft);
-                output[destination] += work[static_cast<size_t>(n)].real() * window;
-                weights[static_cast<size_t>(destination)] += window * window;
-            }
-        }
-        for (int i = 0; i < outputSamples; ++i)
-            output[i] /= std::max(weights[static_cast<size_t>(i)], 1.0e-5f);
+    if (!MoveFileExW(temporary.c_str(), destination.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::filesystem::remove(temporary, ec);
+        error = "无法替换 WAV 输出: " + PathText(destination);
+        return false;
     }
+    return true;
 }
 
-std::vector<float> InterleavedToPlanar(const AudioBuffer& audio) {
-    std::vector<float> planar(static_cast<size_t>(audio.channels) * audio.frames());
-    for (size_t i = 0; i < audio.frames(); ++i)
-        for (int c = 0; c < audio.channels; ++c)
-            planar[static_cast<size_t>(c) * audio.frames() + i] = audio.samples[i * audio.channels + c];
-    return planar;
-}
-
-AudioBuffer PlanarToAudio(const std::vector<float>& planar, int channels, int sampleRate) {
-    AudioBuffer audio;
-    audio.channels = channels;
-    audio.sampleRate = sampleRate;
-    const size_t frames = planar.size() / static_cast<size_t>(channels);
-    audio.samples.resize(frames * static_cast<size_t>(channels));
-    for (size_t i = 0; i < frames; ++i)
-        for (int c = 0; c < channels; ++c)
-            audio.samples[i * channels + c] = planar[static_cast<size_t>(c) * frames + i];
-    return audio;
+bool ValidateSessionContract(const Ort::Session& session,
+                             const ModelContract& contract,
+                             std::string& error) {
+    try {
+        if (session.GetInputCount() != 1 || session.GetOutputCount() != 1) {
+            error = std::string(contract.name) + " 模型输入输出数量不匹配";
+            return false;
+        }
+        const auto inputShape = session.GetInputTypeInfo(0)
+                                    .GetTensorTypeAndShapeInfo().GetShape();
+        const auto outputShape = session.GetOutputTypeInfo(0)
+                                     .GetTensorTypeAndShapeInfo().GetShape();
+        if (!MatchesShape(inputShape, contract.input) ||
+            !MatchesShape(outputShape, contract.output)) {
+            error = std::string(contract.name) + " 模型结构与当前处理流程不匹配";
+            return false;
+        }
+    } catch (const Ort::Exception&) {
+        error = std::string(contract.name) + " 模型结构读取失败";
+        return false;
+    }
+    return true;
 }
 
 std::vector<float> MelBank() {
@@ -320,8 +248,8 @@ bool RunBsTrack(Ort::Session& session,
         }
 
         ComplexSpectrogram spectrum;
-        Stft(chunk, kChannels, kBsChunkSamples, kBsHop, spectrum, fft);
-        if (spectrum.frames != kBsFrames) {
+        Stft(chunk, kChannels, kBsChunkSamples, kBsHop, kNfft, spectrum, fft);
+        if (!spectrum.valid() || spectrum.frames != kBsFrames || spectrum.freqs != kFreqs) {
             error = "程序的内置文件不完整，请重新解压完整安装包";
             return false;
         }
@@ -350,6 +278,8 @@ bool RunBsTrack(Ort::Session& session,
             error = "第一遍制作失败";
             return false;
         }
+        for (float& value : modelMask)
+            if (!std::isfinite(value)) value = 0.0f;
 
         ComplexSpectrogram estimate = spectrum;
         for (int channel = 0; channel < kChannels; ++channel) {
@@ -365,7 +295,7 @@ bool RunBsTrack(Ort::Session& session,
         }
 
         std::vector<float> estimatePlanar;
-        Istft(estimate, kBsChunkSamples, kBsHop, estimatePlanar, fft);
+        Istft(estimate, kBsChunkSamples, kBsHop, kNfft, estimatePlanar, fft);
         const bool first = start == 0;
         const bool last = start + kBsStep >= paddedSamples;
         for (int local = 0; local < chunkLength; ++local) {
@@ -419,13 +349,16 @@ struct SeparationEngine::Impl {
 
     std::unique_ptr<Ort::Session> OpenSession(
         const std::filesystem::path& model,
+        const ModelContract& contract,
         std::string& error) {
         try {
-            return std::make_unique<Ort::Session>(
+            auto session = std::make_unique<Ort::Session>(
                 env, model.wstring().c_str(), options);
+            if (!ValidateSessionContract(*session, contract, error)) return nullptr;
+            return session;
         } catch (const Ort::Exception& exception) {
             static_cast<void>(exception);
-            error = "程序的内置文件不完整，请重新解压完整安装包";
+            error = std::string(contract.name) + " 模型加载失败";
             return nullptr;
         }
     }
@@ -455,7 +388,7 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
                                    std::string& error) {
     AudioBuffer inputAudio;
     if (callbacks.log) callbacks.log("正在读取歌曲：" + PathText(input));
-    if (!LoadAudio(input, inputAudio, error)) {
+    if (!LoadAudio(input, inputAudio, error, &cancel)) {
         if (error == "音频文件过大") error = "歌曲太长";
         return false;
     }
@@ -471,7 +404,8 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
     const int samples = static_cast<int>(inputAudio.frames());
     auto planar = InterleavedToPlanar(inputAudio);
     if (callbacks.log) callbacks.log("正在进行第一遍制作...");
-    auto bsSession = impl_->OpenSession(config.bsModel, error);
+    if (cancel.load()) { error = "已取消"; return false; }
+    auto bsSession = impl_->OpenSession(config.bsModel, kBsContract, error);
     if (!bsSession) return false;
     std::vector<float> bsVocalPlanar;
     if (!RunBsTrack(*bsSession, planar, samples, callbacks, cancel,
@@ -483,18 +417,26 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
     if (callbacks.log) callbacks.log("正在进行第二遍制作...");
     std::vector<float> melVocalPlanar(static_cast<size_t>(kChannels) * samples, 0.0f);
     {
-    auto melSession = impl_->OpenSession(config.melModel, error);
+    if (cancel.load()) { error = "已取消"; return false; }
+    auto melSession = impl_->OpenSession(config.melModel, kMelContract, error);
     if (!melSession) return false;
     std::vector<float> overlapWeight(static_cast<size_t>(samples), 0.0f);
     const int step = std::max(
         kMelHop, kMelChunkSamples * (100 - std::clamp(config.overlap, 0, 90)) / 100);
+    // Match the generic inference path used by the reference implementation:
+    // extend long tracks by the overlap border, and reflect-pad a substantial
+    // tail instead of feeding an abrupt zero edge to the model.
+    const int edgeBorder = kMelChunkSamples - step;
+    const bool padTrackEdges = edgeBorder > 0 && samples > 2 * edgeBorder;
+    const int border = padTrackEdges ? edgeBorder : 0;
+    const int paddedSamples = samples + border * 2;
     std::vector<int> starts;
-    if (samples <= kMelChunkSamples) {
+    if (paddedSamples <= kMelChunkSamples) {
         starts.push_back(0);
     } else {
-        for (int start = 0; start < samples; start += step) {
-            if (start + kMelChunkSamples >= samples) {
-                const int finalStart = samples - kMelChunkSamples;
+        for (int start = 0; start < paddedSamples; start += step) {
+            if (start + kMelChunkSamples >= paddedSamples) {
+                const int finalStart = paddedSamples - kMelChunkSamples;
                 if (starts.empty() || starts.back() != finalStart) starts.push_back(finalStart);
                 break;
             }
@@ -502,19 +444,35 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
         }
     }
     const Ort::MemoryInfo memory = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto melInputNameHolder = melSession->GetInputNameAllocated(0, allocator);
+    auto melOutputNameHolder = melSession->GetOutputNameAllocated(0, allocator);
+    const char* melInputName = melInputNameHolder.get();
+    const char* melOutputName = melOutputNameHolder.get();
     size_t completed = 0;
     for (size_t chunkIndex = 0; chunkIndex < starts.size(); ++chunkIndex) {
         if (cancel.load()) { error = "已取消"; return false; }
         const int start = starts[chunkIndex];
-        const int length = std::min(kMelChunkSamples, samples - start);
+        const int chunkLength = std::min(kMelChunkSamples, paddedSamples - start);
         std::vector<float> chunk(static_cast<size_t>(kChannels) * kMelChunkSamples, 0.0f);
-        for (int c = 0; c < kChannels; ++c)
-            std::copy_n(planar.data() + static_cast<size_t>(c) * samples + start, length,
-                        chunk.data() + static_cast<size_t>(c) * kMelChunkSamples);
+        for (int c = 0; c < kChannels; ++c) {
+            float* destination = chunk.data() + static_cast<size_t>(c) * kMelChunkSamples;
+            const float* source = planar.data() + static_cast<size_t>(c) * samples;
+            for (int local = 0; local < chunkLength; ++local) {
+                destination[local] = source[ReflectIndex(start + local - border, samples)];
+            }
+            if (chunkLength > kMelChunkSamples / 2 && chunkLength < kMelChunkSamples) {
+                for (int local = chunkLength; local < kMelChunkSamples; ++local)
+                    destination[local] = destination[ReflectIndex(local, chunkLength)];
+            }
+        }
 
         ComplexSpectrogram spec;
-        Stft(chunk, kChannels, kMelChunkSamples, kMelHop, spec, impl_->fft);
-        Ort::AllocatorWithDefaultOptions allocator;
+        Stft(chunk, kChannels, kMelChunkSamples, kMelHop, kNfft, spec, impl_->fft);
+        if (!spec.valid() || spec.frames != kMelFrames || spec.freqs != kFreqs) {
+            error = "程序的内置文件不完整，请重新解压完整安装包";
+            return false;
+        }
         std::vector<float> melMask;
         {
             // 可选融合文件使用独立的 258 帧输入契约。
@@ -554,10 +512,6 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
                 memory, melInput.data(), melInput.size(), melShape.data(), melShape.size());
             auto melOut = Ort::Value::CreateTensor<float>(
                 memory, melMask.data(), melMask.size(), melOutShape.data(), melOutShape.size());
-            auto melInputNameHolder = melSession->GetInputNameAllocated(0, allocator);
-            auto melOutputNameHolder = melSession->GetOutputNameAllocated(0, allocator);
-            const char* melInputName = melInputNameHolder.get();
-            const char* melOutputName = melOutputNameHolder.get();
             try {
                 melSession->Run(Ort::RunOptions{nullptr}, &melInputName, &melTensor, 1,
                                 &melOutputName, &melOut, 1);
@@ -567,6 +521,8 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
                 return false;
             }
         }
+        for (float& value : melMask)
+            if (!std::isfinite(value)) value = 0.0f;
 
         // 将 Mel 模型按频带展开的结果还原到原频率轴。
         std::vector<std::complex<float>> melByFrequency(
@@ -612,20 +568,22 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
                     estimate.at(channel, freq, frame) = mix * mask;
                 }
         std::vector<float> estimatePlanar;
-        Istft(estimate, kMelChunkSamples, kMelHop, estimatePlanar, impl_->fft);
+        Istft(estimate, kMelChunkSamples, kMelHop, kNfft, estimatePlanar, impl_->fft);
         const int leftOverlap = chunkIndex == 0
             ? 0
-            : std::clamp(starts[chunkIndex - 1] + kMelChunkSamples - start, 0, length);
+            : std::clamp(starts[chunkIndex - 1] + kMelChunkSamples - start, 0, chunkLength);
         const int rightOverlap = chunkIndex + 1 >= starts.size()
             ? 0
-            : std::clamp(start + kMelChunkSamples - starts[chunkIndex + 1], 0, length);
-        for (int local = 0; local < length; ++local) {
+            : std::clamp(start + kMelChunkSamples - starts[chunkIndex + 1], 0, chunkLength);
+        for (int local = 0; local < chunkLength; ++local) {
             float weight = 1.0f;
             if (leftOverlap > 0 && local < leftOverlap)
                 weight = std::min(weight, static_cast<float>(local + 1) / (leftOverlap + 1));
-            if (rightOverlap > 0 && local >= length - rightOverlap)
-                weight = std::min(weight, static_cast<float>(length - local) / (rightOverlap + 1));
-            const int destination = start + local;
+            if (rightOverlap > 0 && local >= chunkLength - rightOverlap)
+                weight = std::min(weight, static_cast<float>(chunkLength - local) /
+                                              (rightOverlap + 1));
+            const int destination = start + local - border;
+            if (destination < 0 || destination >= samples) continue;
             overlapWeight[static_cast<size_t>(destination)] += weight;
             for (int c = 0; c < kChannels; ++c) {
                 melVocalPlanar[static_cast<size_t>(c) * samples + destination] +=
@@ -650,7 +608,10 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
 
     std::vector<float> vocalPlanar(static_cast<size_t>(kChannels) * samples, 0.0f);
     for (size_t index = 0; index < vocalPlanar.size(); ++index)
-        vocalPlanar[index] = 0.5f * melVocalPlanar[index] + 0.5f * bsVocalPlanar[index];
+        vocalPlanar[index] = std::isfinite(melVocalPlanar[index]) &&
+                             std::isfinite(bsVocalPlanar[index])
+            ? 0.5f * melVocalPlanar[index] + 0.5f * bsVocalPlanar[index]
+            : 0.0f;
 
     AudioBuffer vocals = PlanarToAudio(vocalPlanar, kChannels, kSampleRate);
     AudioBuffer instrumental = inputAudio;
@@ -669,8 +630,8 @@ bool SeparationEngine::ProcessFile(const std::filesystem::path& input,
         const auto stemText = std::string(stem.begin(), stem.end());
         callbacks.log("正在保存两份歌曲：" + stemText);
     }
-    if (!WriteWav(outputDirectory / (stem + version + L"_vocals.wav"), vocals, error)) return false;
-    if (!WriteWav(outputDirectory / (stem + version + L"_instrumental.wav"), instrumental, error)) return false;
+    if (!WriteWavAtomically(outputDirectory / (stem + version + L"_vocals.wav"), vocals, error)) return false;
+    if (!WriteWavAtomically(outputDirectory / (stem + version + L"_instrumental.wav"), instrumental, error)) return false;
     if (callbacks.progress) callbacks.progress(1.0);
     return true;
 }
